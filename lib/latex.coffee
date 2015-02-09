@@ -50,7 +50,6 @@ module.exports =
         @showError(error)
         return false
 
-      @pdfFile = result.outputFilePath
       @moveResult(result, rootFilePath) if @shouldMoveResult()
       @showResult(result)
 
@@ -95,13 +94,18 @@ module.exports =
         console.info 'LaTeX clean did not find: ' + fileToRemove
 
   sync: ->
-    unless @pdfFile?
-      console.info 'File needs to be TeXified before SyncTeX can work.' unless atom.inSpecMode()
-      return
-
     {filePath, lineNumber} = @getEditorDetails()
-    opener = @getOpener()
-    opener?.open(@pdfFile, filePath, lineNumber)
+
+    unless outputFilePath = @syncCache?[filePath]
+      unless outputFilePath = @resolveOutputFilePath(filePath)
+        unless atom.inSpecMode()
+          console.info 'Could not resolve path to output file associated with the current file.'
+        return
+      @syncCache ?= {}
+      @syncCache[filePath] = outputFilePath
+
+    if opener = @getOpener()
+      opener.open(outputFilePath, filePath, lineNumber)
 
   isTexFile: (filePath) ->
     # TODO: Improve; will suffice for the time being.
@@ -139,19 +143,32 @@ module.exports =
     return new OpenerImpl()
 
   moveResult: (result, filePath) ->
-    sourceDir = path.dirname(filePath)
-    outputFilePath = result.outputFilePath
-    result.outputFilePath = path.join(sourceDir, path.basename(outputFilePath))
-    fs.moveSync(outputFilePath, result.outputFilePath)
-    @pdfFile = result.outputFilePath
+    originalFilePath = result.outputFilePath
+    result.outputFilePath = @alterParentPath(filePath, result.outputFilePath)
+    fs.moveSync(originalFilePath, result.outputFilePath)
 
-    syncFilePath = outputFilePath.replace(/.pdf$/, '.synctex.gz')
+    syncFilePath = originalFilePath.replace(/\.pdf$/, '.synctex.gz')
     if fs.existsSync(syncFilePath)
-      fs.moveSync(syncFilePath, path.join(sourceDir, path.basename(syncFilePath)))
+      fs.moveSync(syncFilePath, @alterParentPath(filePath, syncFilePath))
 
-  resolveRootFilePath: (path) ->
-    finder = new MasterTexFinder(path)
+  resolveRootFilePath: (filePath) ->
+    finder = new MasterTexFinder(filePath)
     finder.getMasterTexPath()
+
+  resolveOutputFilePath: (filePath) ->
+    rootFilePath = @resolveRootFilePath(filePath)
+    builder = @getBuilder()
+    result = builder.parseLogFile(rootFilePath)
+    unless outputFilePath = result?.outputFilePath
+      console.info 'Log file parsing failed!'
+      return
+
+    outputFilePath = @alterParentPath(rootFilePath, outputFilePath) if @shouldMoveResult()
+    outputFilePath
+
+  alterParentPath: (targetPath, originalPath) ->
+    targetDir = path.dirname(targetPath)
+    path.join(targetDir, path.basename(originalPath))
 
   shouldMoveResult: ->
     atom.config.get('latex.moveResultToSourceDirectory')
